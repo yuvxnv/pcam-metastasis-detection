@@ -1,0 +1,4 @@
+split,n,negative(0),positive(1),pct_positive
+train,262144,131072,131072,50.0
+val,32768,16399,16369,49.95
+test,32768,16391,16377,49.98

@@ -1,0 +1,11 @@
+# Versions used for the local development environment (Python 3.12).
+# On Colab, torch/torchvision are preinstalled; the notebook installs only the rest.
+torch>=2.5
+torchvision>=0.20
+h5py
+numpy
+pandas
+scikit-learn
+matplotlib
+tqdm
+gdown

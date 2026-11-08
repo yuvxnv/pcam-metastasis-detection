@@ -1,0 +1,17 @@
+# data and model weights - never commit
+data/
+*.h5
+*.gz
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+# environments / caches
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+
+# test-set lock files stay local
+results/.test_used_*
