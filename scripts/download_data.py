@@ -10,6 +10,6 @@ p.add_argument("--root", default="data")
 args = p.parse_args()
 
 for split in ["val", "test", "train"]:
-    print(f"=== downloading {split} ===", flush=True)
+    print(f"=== downloading {split} === (unpacking after the download is silent and can take several minutes; do not interrupt)", flush=True)
     ds = PCAM(root=args.root, split=split, download=True)
     print(f"{split}: {len(ds)} images OK", flush=True)
