@@ -21,7 +21,7 @@ from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 
-from src.data import PCamH5, load_labels, stratified_subsample
+from src.data import PCamH5, load_images_in_memory, load_labels, stratified_subsample
 from src.models import build_model
 
 MEAN, STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]  # ImageNet stats (used for both models)
@@ -48,7 +48,7 @@ def train_transform():
     return v2.Compose([
         v2.RandomHorizontalFlip(), v2.RandomVerticalFlip(),
         v2.RandomChoice([v2.RandomRotation((a, a)) for a in (0, 90, 180, 270)]),
-        v2.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.02),
+        v2.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
         v2.ToDtype(torch.float32, scale=True), v2.Normalize(MEAN, STD),
     ])
 
@@ -56,6 +56,50 @@ def train_transform():
 def eval_transform():
     """No augmentation for validation/test - only the same normalisation."""
     return v2.Compose([v2.ToDtype(torch.float32, scale=True), v2.Normalize(MEAN, STD)])
+
+
+
+_MEAN_T, _STD_T = torch.tensor(MEAN).view(1, 3, 1, 1), torch.tensor(STD).view(1, 3, 1, 1)
+
+
+def to_float(xb, device):
+    """uint8 (B,96,96,3) numpy -> float (B,3,96,96) in [0,1] on the device."""
+    return torch.from_numpy(xb).to(device).permute(0, 3, 1, 2).float() / 255.0
+
+
+def normalize(x):
+    return (x - _MEAN_T.to(x.device)) / _STD_T.to(x.device)
+
+
+def gpu_augment(x):
+    """Same augmentation as train_transform(), done on a whole batch on the GPU:
+    per-image random h/v flips, random 90-degree rotation, mild brightness/contrast/saturation jitter."""
+    B, dev = x.shape[0], x.device
+    m = (torch.rand(B, device=dev) < 0.5).view(B, 1, 1, 1)
+    x = torch.where(m, x.flip(3), x)
+    m = (torch.rand(B, device=dev) < 0.5).view(B, 1, 1, 1)
+    x = torch.where(m, x.flip(2), x)
+    k = torch.randint(0, 4, (B,), device=dev)
+    for r in (1, 2, 3):
+        sel = k == r
+        if sel.any():
+            x[sel] = torch.rot90(x[sel], r, (2, 3))
+    j = lambda: (1 + (torch.rand(B, 1, 1, 1, device=dev) - 0.5) * 0.2)  # factor in [0.9, 1.1]
+    x = x * j()                                              # brightness
+    mean = x.mean(dim=(1, 2, 3), keepdim=True)
+    x = (x - mean) * j() + mean                              # contrast
+    gray = (0.299 * x[:, 0:1] + 0.587 * x[:, 1:2] + 0.114 * x[:, 2:3])
+    x = (x - gray) * j() + gray                              # saturation
+    return x.clamp(0, 1)
+
+
+@torch.no_grad()
+def predict_arrays(model, X, device, bs=512):
+    model.eval()
+    out = []
+    for s in range(0, len(X), bs):
+        out.append(torch.sigmoid(model(normalize(to_float(X[s:s + bs], device)))).cpu())
+    return torch.cat(out).numpy()
 
 
 @torch.no_grad()
@@ -78,6 +122,8 @@ def main():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--workers", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--in-memory", action="store_true",
+                   help="load data into RAM + augment on GPU (much faster; needs ~8 GB RAM for full train)")
     p.add_argument("--tag", default="", help="suffix for output names, e.g. 'dev'")
     args = p.parse_args()
 
@@ -91,14 +137,22 @@ def main():
     ytr, yva = load_labels(args.root, "train"), load_labels(args.root, "val")
     tr_idx = stratified_subsample(ytr, args.n_train, args.seed) if args.n_train else None
     va_idx = stratified_subsample(yva, args.n_val, args.seed) if args.n_val else None
-    train_ds = PCamH5(args.root, "train", tr_idx, train_transform())
-    val_ds = PCamH5(args.root, "val", va_idx, eval_transform())
-    print(f"train={len(train_ds)}  val={len(val_ds)}", flush=True)
-
     g = torch.Generator().manual_seed(args.seed)
-    kw = dict(num_workers=args.workers, persistent_workers=args.workers > 0)
-    train_loader = DataLoader(train_ds, args.batch_size, shuffle=True, generator=g, drop_last=True, **kw)
-    val_loader = DataLoader(val_ds, 256, shuffle=False, **kw)
+    if args.in_memory:
+        # Fast path: whole arrays in RAM, augmentation on the GPU (no disk reads per image).
+        t0 = time.time()
+        Xtr = load_images_in_memory(args.root, "train", tr_idx)
+        Ytr = ytr if tr_idx is None else ytr[tr_idx]
+        Xva = load_images_in_memory(args.root, "val", va_idx)
+        Yva = yva if va_idx is None else yva[va_idx]
+        print(f"in-memory: train={len(Xtr)} val={len(Xva)} (loaded in {time.time()-t0:.0f}s)", flush=True)
+    else:
+        train_ds = PCamH5(args.root, "train", tr_idx, train_transform())
+        val_ds = PCamH5(args.root, "val", va_idx, eval_transform())
+        print(f"train={len(train_ds)}  val={len(val_ds)}", flush=True)
+        kw = dict(num_workers=args.workers, persistent_workers=args.workers > 0)
+        train_loader = DataLoader(train_ds, args.batch_size, shuffle=True, generator=g, drop_last=True, **kw)
+        val_loader = DataLoader(val_ds, 256, shuffle=False, **kw)
 
     model = build_model(args.model).to(device)
     # ResNet gets a gentler learning rate: its pretrained weights shouldn't be wrecked.
@@ -111,8 +165,15 @@ def main():
     for epoch in range(1, args.epochs + 1):
         model.train()
         t0, run_loss, n = time.time(), 0.0, 0
-        for x, y in train_loader:
-            x, y = x.to(device), y.float().to(device)
+        if args.in_memory:
+            perm = torch.randperm(len(Xtr), generator=g).numpy()
+            batches = ((perm[s:s + args.batch_size]) for s in range(0, len(perm) - args.batch_size + 1, args.batch_size))
+            batch_iter = ((normalize(gpu_augment(to_float(Xtr[b], device))),
+                           torch.from_numpy(Ytr[b]).to(device)) for b in batches)
+        else:
+            batch_iter = ((x.to(device), y.to(device)) for x, y in train_loader)
+        for x, y in batch_iter:
+            y = y.float()
             opt.zero_grad()
             loss = loss_fn(model(x), y)
             loss.backward()
@@ -121,22 +182,25 @@ def main():
             n += len(y)
         sched.step()
 
-        vp = predict(model, val_loader, device)
-        vy = val_ds.labels[val_ds.indices]
+        if args.in_memory:
+            vp, vy = predict_arrays(model, Xva, device), Yva
+        else:
+            vp, vy = predict(model, val_loader, device), val_ds.labels[val_ds.indices]
         val_auc = roc_auc_score(vy, vp)
         val_acc = float(((vp > 0.5) == vy).mean())
-        history.append({"epoch": epoch, "train_loss": run_loss / n, "val_auc": val_auc,
-                        "val_acc": val_acc, "seconds": time.time() - t0})
+        history.append({"epoch": epoch, "train_loss": run_loss / n, "val_auc": float(val_auc),
+                        "val_acc": val_acc, "seconds": round(time.time() - t0, 1)})
         print(history[-1], flush=True)
 
         if val_auc > best_auc:  # best epoch chosen on VALIDATION AUC only
-            best_auc = val_auc
+            best_auc = float(val_auc)
             torch.save(model.state_dict(), f"checkpoints/{name}.pt")
             best_epoch = epoch
+        # saved every epoch, so an interrupted run still leaves a usable record
+        pd.DataFrame(history).to_csv(f"results/history_{name}.csv", index=False)
+        json.dump({"best_epoch": best_epoch, "best_val_auc": best_auc, "args": vars(args)},
+                  open(f"results/best_{name}.json", "w"), indent=2)
 
-    pd.DataFrame(history).to_csv(f"results/history_{name}.csv", index=False)
-    json.dump({"best_epoch": best_epoch, "best_val_auc": best_auc, "args": vars(args)},
-              open(f"results/best_{name}.json", "w"), indent=2)
     print(f"done. best epoch={best_epoch} val_auc={best_auc:.4f}", flush=True)
 
 

@@ -60,3 +60,17 @@ def stratified_subsample(labels, n, seed):
     idx = np.concatenate(idx)
     rng.shuffle(idx)
     return np.sort(idx)  # sorted = faster sequential h5 reads
+
+
+def load_images_in_memory(root, split, indices=None, chunk=2000):
+    """Read patches into one big uint8 array (N, 96, 96, 3).
+    Full train set = 7.2 GB of RAM (fine on Colab, too big for an 8 GB Mac: use a subsample there)."""
+    xpath, _ = h5_paths(root, split)
+    with h5py.File(xpath, "r") as f:
+        if indices is None:
+            return f["x"][:]
+        indices = np.asarray(indices)
+        out = np.empty((len(indices), 96, 96, 3), dtype=np.uint8)
+        for s in range(0, len(indices), chunk):  # sorted indices, read in chunks
+            out[s:s + chunk] = f["x"][indices[s:s + chunk].tolist()]
+        return out
