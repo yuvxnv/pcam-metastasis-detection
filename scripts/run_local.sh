@@ -1,16 +1,18 @@
 #!/bin/bash
-# Local training run: both models on a fixed 60,000-image balanced subsample of the
-# training set (compute limits), best epoch picked on the FULL validation set.
+# Local training run. Default: both models on a fixed 60,000-image balanced subsample
+# of the training set. Full data:  NTRAIN=all EPOCHS=6 caffeinate -i bash scripts/run_local.sh
+# Best epoch is picked on the FULL validation set.
 # Does NOT touch the test set. Run from anywhere:  caffeinate -i bash scripts/run_local.sh
 set -e
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
-EPOCHS=8
-NTRAIN=60000
+EPOCHS=${EPOCHS:-8}
+NTRAIN=${NTRAIN:-60000}   # a number, or "all" for the full 262,144 training images
+if [ "$NTRAIN" = "all" ]; then NARG=""; else NARG="--n-train $NTRAIN"; fi
 
 for m in cnn resnet18; do
   echo "=== $(date '+%H:%M:%S') training $m ===" | tee -a results/run_local.log
-  $PY -m src.train --model $m --n-train $NTRAIN --epochs $EPOCHS 2>&1 | grep -vi warning | tee -a results/run_local.log
+  $PY -m src.train --model $m $NARG --epochs $EPOCHS 2>&1 | grep -vi warning | tee -a results/run_local.log
 done
 
 echo "=== $(date '+%H:%M:%S') validation evaluation ===" | tee -a results/run_local.log
