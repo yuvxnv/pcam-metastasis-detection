@@ -32,7 +32,7 @@ This uses `torchvision.datasets.PCAM` (Google Drive). The script unpacks the arc
 - **Decision threshold:** two are reported. (a) 0.5, fixed in advance. (b) A threshold chosen on the *validation* set by a rule fixed beforehand: the highest threshold with at least 90% validation sensitivity (0.254 for the CNN, 0.176 for ResNet18). It was then applied unchanged to the test set.
 - **Confidence intervals:** 95% bootstrap intervals for AUC, from 2,000 resamples of the test patches. These capture patch-sampling variability only. They do not capture training randomness (one seed per model) or the fact that patches from the same slide are not independent.
 - **Reproducibility:** seeds are fixed. Re-running the same training twice on the same Mac produced identical loss and validation AUC for the epochs I compared (1 and 2), but GPU runs are not guaranteed to be bit-for-bit identical on other hardware.
-- **Where it was run:** locally on an Apple M3 (8 GB RAM) with the PyTorch MPS backend, using `scripts/run_local.sh`. A Colab notebook (`colab_full_run.ipynb`) is included but was **not** used for the reported results.
+- **Where it was run:** locally on an Apple M3 (8 GB RAM) with the PyTorch MPS backend, using `scripts/run_local.sh`.
 
 ## Results
 All numbers below come from `results/metrics.csv`, scored on the 32,768-patch test set.
