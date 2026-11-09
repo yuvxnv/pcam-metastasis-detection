@@ -152,7 +152,8 @@ def main():
         print(f"train={len(train_ds)}  val={len(val_ds)}", flush=True)
         kw = dict(num_workers=args.workers, persistent_workers=args.workers > 0)
         train_loader = DataLoader(train_ds, args.batch_size, shuffle=True, generator=g, drop_last=True, **kw)
-        val_loader = DataLoader(val_ds, 256, shuffle=False, **kw)
+        # Validation runs once per epoch, so no helper processes (saves ~0.7 GB of RAM).
+        val_loader = DataLoader(val_ds, 256, shuffle=False, num_workers=0)
 
     model = build_model(args.model).to(device)
     # ResNet gets a gentler learning rate: its pretrained weights shouldn't be wrecked.
