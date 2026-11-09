@@ -8,6 +8,7 @@ Final (test set, ONCE per model - a lock file stops accidental re-runs):
 The decision threshold is fixed at 0.5 in advance. It is NOT tuned on the test set.
 """
 import argparse
+import json
 from pathlib import Path
 
 import h5py
@@ -102,6 +103,9 @@ def main():
         if lock.exists():
             raise SystemExit(f"Refusing: test set already scored for '{name}' ({lock}). "
                              "Scoring it repeatedly and picking favourites defeats its purpose.")
+        if not Path(f"results/threshold_{name}.json").exists():
+            raise SystemExit(f"Refusing: choose the threshold on validation first "
+                             f"(python -m src.choose_threshold --model {args.model}).")
         lock.write_text("test set scored once for this model\n")
 
     set_seed(args.seed)
@@ -116,51 +120,69 @@ def main():
     model.load_state_dict(torch.load(f"checkpoints/{name}.pt", map_location=device))
     prob = predict(model, loader, device)
     print(f"scored {len(y)} {args.split} patches with {name}")
+    # save raw predictions IMMEDIATELY, so a later crash can never force a second scoring
+    pd.DataFrame({"index": ds.indices, "label": y, "prob": prob}).to_csv(
+        f"results/preds_{out}.csv", index=False)
 
-    # ---- metrics ----
-    pred = (prob >= THRESHOLD).astype(int)
-    tn, fp, fn, tp = confusion_matrix(y, pred).ravel()
+    # ---- metrics at two thresholds ----
+    # (a) fixed 0.5 in advance; (b) threshold chosen on the VALIDATION set (src/choose_threshold.py)
+    tpath = Path(f"results/threshold_{name}.json")
+    tuned = json.load(open(tpath))["threshold"] if tpath.exists() else None
+    thresholds = [("fixed 0.5", THRESHOLD)]
+    if tuned is not None:
+        thresholds.append(("validation-chosen (sens>=0.90 on val)", tuned))
+
     auc = roc_auc_score(y, prob)
     lo, hi = bootstrap_auc_ci(y, prob, seed=args.seed)
-    row = {"model": name, "split": args.split, "n": len(y), "auc": auc,
-           "auc_ci95_low": lo, "auc_ci95_high": hi,
-           "accuracy": (tp + tn) / len(y), "sensitivity": tp / (tp + fn),
-           "specificity": tn / (tn + fp), "ece": expected_calibration_error(y, prob),
-           "tn": tn, "fp": fp, "fn": fn, "tp": tp, "threshold": THRESHOLD}
-    print(pd.Series(row).to_string())
+    ece = expected_calibration_error(y, prob)
+    rows, cms = [], {}
+    for rule, thr in thresholds:
+        pr = (prob >= thr).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y, pr).ravel()
+        cms[rule] = np.array([[tn, fp], [fn, tp]])
+        rows.append({"model": name, "split": args.split, "threshold_rule": rule, "threshold": float(thr),
+                     "n": len(y), "auc": auc, "auc_ci95_low": lo, "auc_ci95_high": hi,
+                     "accuracy": (tp + tn) / len(y), "sensitivity": tp / (tp + fn),
+                     "specificity": tn / (tn + fp), "ece": ece, "tn": tn, "fp": fp, "fn": fn, "tp": tp})
+        print(pd.Series(rows[-1]).to_string(), "\n")
+    row = rows[0]            # the fixed-0.5 row drives the plots below
+    pred = (prob >= THRESHOLD).astype(int)
 
     mpath = Path("results/metrics.csv")
-    new = pd.DataFrame([row])
+    new = pd.DataFrame(rows)
     if mpath.exists():
         old = pd.read_csv(mpath)
+        if "threshold_rule" not in old.columns:
+            old = old.iloc[0:0]
         old = old[~((old.model == name) & (old.split == args.split))]
         new = pd.concat([old, new], ignore_index=True)
     new.to_csv(mpath, index=False)
-    pd.DataFrame({"index": ds.indices, "label": y, "prob": prob}).to_csv(
-        f"results/preds_{out}.csv", index=False)
 
     # ---- ROC ----
     fpr, tpr, _ = roc_curve(y, prob)
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.plot(fpr, tpr, lw=2, label=f"AUC {auc:.3f} (95% CI {lo:.3f}-{hi:.3f})")
     ax.plot([0, 1], [0, 1], "--", color="gray", label="chance")
-    ax.scatter([1 - row["specificity"]], [row["sensitivity"]], color="red", zorder=3,
-               label=f"threshold {THRESHOLD}")
+    for r, color in zip(rows, ["red", "green"]):
+        ax.scatter([1 - r["specificity"]], [r["sensitivity"]], color=color, zorder=3,
+                   label=f"threshold {r['threshold']:.3f} ({r['threshold_rule'].split(' (')[0]})")
     ax.set(xlabel="False positive rate (1 - specificity)", ylabel="True positive rate (sensitivity)",
            title=f"ROC - {name} ({args.split})")
-    ax.legend(loc="lower right")
+    ax.legend(loc="lower right", fontsize=8)
     fig.tight_layout(); fig.savefig(f"results/roc_{out}.png", dpi=130); plt.close(fig)
 
-    # ---- confusion matrix ----
-    fig, ax = plt.subplots(figsize=(4.4, 4))
-    cm = np.array([[tn, fp], [fn, tp]])
-    ax.imshow(cm, cmap="Blues")
-    for i in range(2):
-        for j in range(2):
-            ax.text(j, i, f"{cm[i, j]:,}", ha="center", va="center",
-                    color="white" if cm[i, j] > cm.max() / 2 else "black", fontsize=13)
-    ax.set(xticks=[0, 1], yticks=[0, 1], xticklabels=["pred normal", "pred tumor"],
-           yticklabels=["true normal", "true tumor"], title=f"Confusion matrix - {name} ({args.split})")
+    # ---- confusion matrices (one panel per threshold) ----
+    fig, axes = plt.subplots(1, len(rows), figsize=(4.6 * len(rows), 4.2), squeeze=False)
+    for ax, r in zip(axes[0], rows):
+        cm = cms[r["threshold_rule"]]
+        ax.imshow(cm, cmap="Blues")
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, f"{cm[i, j]:,}", ha="center", va="center",
+                        color="white" if cm[i, j] > cm.max() / 2 else "black", fontsize=13)
+        ax.set(xticks=[0, 1], yticks=[0, 1], xticklabels=["pred normal", "pred tumor"],
+               yticklabels=["true normal", "true tumor"],
+               title=f"{name} ({args.split})\nthreshold {r['threshold']:.3f}", )
     fig.tight_layout(); fig.savefig(f"results/confusion_{out}.png", dpi=130); plt.close(fig)
 
     # ---- calibration ----

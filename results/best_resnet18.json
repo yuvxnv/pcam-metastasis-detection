@@ -1,0 +1,17 @@
+{
+  "best_epoch": 2,
+  "best_val_auc": 0.960503429596393,
+  "args": {
+    "model": "resnet18",
+    "root": "data",
+    "n_train": null,
+    "n_val": null,
+    "epochs": 6,
+    "batch_size": 128,
+    "lr": 0.001,
+    "workers": 2,
+    "seed": 42,
+    "in_memory": false,
+    "tag": ""
+  }
+}

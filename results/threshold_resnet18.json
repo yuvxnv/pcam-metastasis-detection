@@ -1,0 +1,8 @@
+{
+  "model": "resnet18",
+  "rule": "highest threshold with validation sensitivity >= 0.9",
+  "threshold": 0.17629103,
+  "val_sensitivity": 0.9000549819781294,
+  "val_specificity": 0.8948716385145435,
+  "chosen_on": "validation set only"
+}

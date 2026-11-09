@@ -1,0 +1,17 @@
+{
+  "best_epoch": 5,
+  "best_val_auc": 0.9576992205617004,
+  "args": {
+    "model": "cnn",
+    "root": "data",
+    "n_train": null,
+    "n_val": null,
+    "epochs": 6,
+    "batch_size": 128,
+    "lr": 0.001,
+    "workers": 2,
+    "seed": 42,
+    "in_memory": false,
+    "tag": ""
+  }
+}

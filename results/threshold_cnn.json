@@ -1,0 +1,8 @@
+{
+  "model": "cnn",
+  "rule": "highest threshold with validation sensitivity >= 0.9",
+  "threshold": 0.25363484,
+  "val_sensitivity": 0.9000549819781294,
+  "val_specificity": 0.871882431855601,
+  "chosen_on": "validation set only"
+}
